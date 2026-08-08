@@ -12,6 +12,7 @@ mod pricing;
 mod report;
 mod scan;
 mod store;
+mod theme;
 mod ui;
 mod wrapped;
 

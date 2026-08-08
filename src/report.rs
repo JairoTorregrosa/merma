@@ -1,6 +1,6 @@
 //! Retrospective report rendering (text + JSON).
 
-use crate::engine::waste::{build_provider_report, CacheMode, ProviderReport, Quartiles};
+use crate::engine::waste::{build_provider_report, CacheMode, ProviderReport};
 use crate::pricing::PriceBook;
 use crate::store::{Store, CLAUDE, CODEX};
 use anyhow::{bail, Context, Result};
@@ -105,75 +105,81 @@ pub fn dur_short(secs: i64) -> String {
     }
 }
 
-fn fmt_range(q: &Quartiles) -> String {
-    format!("{} – {} (median {})", usd(q.p25), usd(q.p75), usd(q.med))
-}
-
 pub fn render_text(reports: &[ProviderReport], label: &str) -> String {
+    use crate::theme::{bold, dim, err_glyph, warn, warn_glyph};
     let mut out = String::new();
     let push = |out: &mut String, s: String| {
         out.push_str(&s);
         out.push('\n');
     };
-    push(&mut out, format!("MERMA REPORT — {label}"));
+    // Label gutter: 2-cell margin + 17-cell label field → values at col 20.
+    let lab = |l: &str| dim(&format!("  {l:<17}"));
+    // Continuation rows align under the value column.
+    let ind = " ".repeat(19);
+    // Primary values pad to a 21-cell field so annotations align (min 1 gap).
+    let gap = |v: &str| " ".repeat(21usize.saturating_sub(v.chars().count()).max(1));
+    push(&mut out, format!("{} {label}", dim("merma report ·")));
     for r in reports {
-        let mode = match r.cache_mode {
-            CacheMode::Full => "full API-equivalent (cache included)",
-            CacheMode::OutputOnly => "output-only",
-        };
         push(&mut out, String::new());
-        push(
-            &mut out,
-            format!(
-                "━━ {} — {} ({}/mo{}) ━━",
-                r.provider.to_uppercase(),
-                r.plan_label,
-                usd(r.plan_monthly_usd),
-                if r.plan_approx { ", price approx" } else { "" }
-            ),
-        );
-        for e in &r.errors {
-            push(&mut out, format!("  ✗ ERROR: {e}"));
+        let mut head = bold(&r.provider);
+        head.push_str(&dim(&format!(
+            " — {} · {}/mo",
+            r.plan_label,
+            usd(r.plan_monthly_usd)
+        )));
+        if r.plan_approx {
+            head.push_str(&dim(" (price approx)"));
         }
-        push(
-            &mut out,
-            format!(
-                "  Extracted ({mode}): {}   [output-only: {}]{}",
-                usd(match r.cache_mode {
-                    CacheMode::Full => r.api.full_usd,
-                    CacheMode::OutputOnly => r.api.output_only_usd,
-                }),
-                usd(r.api.output_only_usd),
-                r.api
-                    .credits
-                    .map(|c| {
-                        let approx = r
-                            .api
-                            .credits_usd_approx
-                            .map(|u| {
-                                let mark = if r.api.credits_price_approx { " ~" } else { "" };
-                                format!(" (≈{}{mark})", usd(u))
-                            })
-                            .unwrap_or_default();
-                        format!("   credits: {c:.0}{approx}")
-                    })
-                    .unwrap_or_default()
+        push(&mut out, head);
+        for e in &r.errors {
+            push(&mut out, format!("  {} {e}", err_glyph()));
+        }
+        let (full, floor) = (usd(r.api.full_usd), usd(r.api.output_only_usd));
+        let extracted = match r.cache_mode {
+            CacheMode::Full => format!(
+                "{}{}{}{}{floor}",
+                lab("extracted"),
+                bold(&full),
+                gap(&full),
+                dim("full API-equivalent, cache included · output-only floor ")
             ),
-        );
+            CacheMode::OutputOnly => format!(
+                "{}{}{}{}{full}",
+                lab("extracted"),
+                bold(&floor),
+                gap(&floor),
+                dim("output-only · full API-equivalent ")
+            ),
+        };
+        push(&mut out, extracted);
+        if let Some(c) = r.api.credits {
+            let count = format!("{c:.0}");
+            let mut line = format!("{}{count}", lab("credits"));
+            if let Some(u) = r.api.credits_usd_approx {
+                line.push_str(&gap(&count));
+                line.push_str(&dim(&format!("≈ {}", usd(u))));
+                if r.api.credits_price_approx {
+                    line.push_str(&dim(" ~"));
+                }
+            }
+            push(&mut out, line);
+        }
         if let Some(u) = &r.utilization {
             push(
                 &mut out,
                 format!(
-                    "  Utilization ({}): weighted peak {:.0}% · coverage {:.0}%",
-                    u.window_id,
+                    "{}weighted peak {:.0}% · coverage {:.0}%{}",
+                    lab("utilization"),
                     u.weighted_peak_pct,
-                    u.coverage_frac * 100.0
+                    u.coverage_frac * 100.0,
+                    dim(&format!(" · {}", u.window_id))
                 ),
             );
             push(
                 &mut out,
                 format!(
-                    "    → subscription waste: {} of {} covered plan cost",
+                    "{}{} of {} covered plan cost",
+                    lab("waste"),
                     usd(u.waste_usd),
                     usd(u.covered_plan_usd)
                 ),
@@ -184,63 +190,94 @@ pub fn render_text(reports: &[ProviderReport], label: &str) -> String {
                 push(
                     &mut out,
                     format!(
-                        "  Max-extraction bound (from your achieved best; join gave less, {} instances):",
-                        m.n_instances_used
+                        "{}≥ {}{}",
+                        lab("period max"),
+                        usd(pm.med),
+                        dim(&format!(
+                            "    lower bound — from your achieved best; \
+                             join gave less · {} instances",
+                            m.n_instances_used
+                        ))
                     ),
                 );
-                push(&mut out, format!("    period max ≥ {}", usd(pm.med)));
                 push(
                     &mut out,
-                    format!("    → left on the table ≥ {}", usd(pw.med)),
+                    format!(
+                        "{}{}",
+                        lab("left on table"),
+                        bold(&format!("≥ {}", usd(pw.med)))
+                    ),
                 );
             }
             (Some(pm), Some(pw), Some(m)) => {
                 push(
                     &mut out,
                     format!(
-                        "  Max-extraction estimate ({} join, P75/P25 = {}, {} instances):",
-                        if m.stable { "stable" } else { "UNSTABLE" },
-                        m.dispersion
-                            .map(|d| format!("{d:.1}×"))
-                            .unwrap_or_else(|| "undefined".into()),
-                        m.n_instances_used
+                        "{}≈ {} – {}{}",
+                        lab("period max"),
+                        usd(pm.p25),
+                        usd(pm.p75),
+                        dim(&format!("    median {}", usd(pm.med)))
                     ),
                 );
-                push(&mut out, format!("    period max ≈ {}", fmt_range(pm)));
                 push(
                     &mut out,
-                    format!("    → left on the table ≈ {}", fmt_range(pw)),
+                    format!(
+                        "{}{}{}",
+                        lab("left on table"),
+                        bold(&format!("≈ {} – {}", usd(pw.p25), usd(pw.p75))),
+                        dim(&format!("    median {}", usd(pw.med)))
+                    ),
+                );
+                let quality = if m.stable {
+                    dim("stable")
+                } else {
+                    warn("UNSTABLE")
+                };
+                push(
+                    &mut out,
+                    format!(
+                        "{ind}{quality}{}",
+                        dim(&format!(
+                            " join · P75/P25 = {} · {} instances",
+                            m.dispersion
+                                .map(|d| format!("{d:.1}×"))
+                                .unwrap_or_else(|| "undefined".into()),
+                            m.n_instances_used
+                        ))
+                    ),
                 );
             }
             _ => {}
         }
         if !r.denominators.is_empty() {
+            let entries: Vec<String> = r
+                .denominators
+                .iter()
+                .map(|d| format!("{} {}/wk", d.name, usd(d.weekly_usd)))
+                .collect();
             push(
                 &mut out,
-                format!(
-                    "  Weekly denominators: {}",
-                    r.denominators
-                        .iter()
-                        .map(|d| format!("{} {}", d.name, usd(d.weekly_usd)))
-                        .collect::<Vec<_>>()
-                        .join(" · ")
-                ),
+                format!("{}{}", lab("denominators"), entries.join(&dim(" · "))),
             );
         }
         if !r.api.by_model.is_empty() {
-            push(&mut out, "  By model:".into());
             push(
                 &mut out,
                 format!(
-                    "    {:<28} {:>7} {:>14} {:>14} {:>12} {:>10} {:>10}",
-                    "model", "calls", "input", "cache-read", "output", "full$", "out$"
+                    "{}{}",
+                    lab("by model"),
+                    dim(&format!(
+                        "{:<28} {:>7} {:>14} {:>14} {:>12} {:>10} {:>10}",
+                        "model", "calls", "input", "cache-read", "output", "full$", "out$"
+                    ))
                 ),
             );
             for m in &r.api.by_model {
                 push(
                     &mut out,
                     format!(
-                        "    {:<28} {:>7} {:>14} {:>14} {:>12} {:>10} {:>10}{}",
+                        "{ind}{:<28} {:>7} {:>14} {:>14} {:>12} {:>10} {:>10}{}",
                         m.model,
                         m.events,
                         m.input,
@@ -254,10 +291,10 @@ pub fn render_text(reports: &[ProviderReport], label: &str) -> String {
             }
         }
         for n in &r.notes {
-            push(&mut out, format!("  ⚠ {n}"));
+            push(&mut out, format!("  {} {n}", warn_glyph()));
         }
     }
-    // Combined headline when both providers present and healthy.
+    // Combined footer when both providers present and healthy.
     let both: Vec<&ProviderReport> = reports.iter().filter(|r| r.errors.is_empty()).collect();
     if both.len() > 1 {
         let extracted: f64 = both
@@ -272,9 +309,12 @@ pub fn render_text(reports: &[ProviderReport], label: &str) -> String {
         push(
             &mut out,
             format!(
-                "TOTAL extracted {} across subscriptions worth {}/mo",
-                usd(extracted),
-                usd(plan)
+                "{}{}{}{}{}",
+                dim("total   extracted "),
+                bold(&usd(extracted)),
+                dim(" across subscriptions worth "),
+                usd(plan),
+                dim("/mo")
             ),
         );
     }

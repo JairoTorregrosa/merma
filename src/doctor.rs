@@ -281,14 +281,21 @@ pub fn run(store: &mut Store, cfg: &Cfg, book: &PriceBook) -> Result<Vec<Check>>
 }
 
 pub fn render_text(checks: &[Check]) -> String {
+    use crate::theme::{dim, err_glyph, ok_glyph, warn_glyph};
     let mut out = String::new();
     for c in checks {
         let icon = match c.status.as_str() {
-            "ok" => "✓",
-            "warn" => "⚠",
-            _ => "✗",
+            "ok" => ok_glyph(),
+            "warn" => warn_glyph(),
+            _ => err_glyph(),
         };
-        out.push_str(&format!("{icon} {:<24} {}\n", c.name, c.detail));
+        // Healthy plumbing recedes; problems are the full-brightness lines.
+        let detail = if c.status == "ok" {
+            dim(&c.detail)
+        } else {
+            c.detail.clone()
+        };
+        out.push_str(&format!("{icon} {:<28} {detail}\n", c.name));
     }
     out
 }

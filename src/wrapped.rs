@@ -2,6 +2,7 @@
 
 use crate::engine::waste::{CacheMode, ProviderReport};
 use crate::report::{date, usd};
+use crate::theme::{bold, dim};
 
 pub const SPARK: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
@@ -59,74 +60,153 @@ pub fn render(reports: &[ProviderReport], label: &str) -> String {
         }
     }
 
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("MERMA WRAPPED · {label}"));
-    lines.push(String::new());
-    lines.push(format!("  extracted (API-equivalent)   {}", usd(extracted)));
-    lines.push(format!(
-        "  output-only floor            {}",
-        usd(output_only)
+    // One row of the card: plain text for measuring, styled text for painting.
+    // Plain and styled variants must be byte-identical modulo escapes.
+    struct Row {
+        l: String,
+        r: String,
+        ls: String,
+        rs: String,
+    }
+    let row = |l: String, r: String, ls: String, rs: String| Row { l, r, ls, rs };
+    let left = |l: String, ls: String| Row {
+        l,
+        r: String::new(),
+        ls,
+        rs: String::new(),
+    };
+    let mut groups: Vec<Vec<Row>> = Vec::new();
+
+    groups.push(vec![left(
+        format!("merma wrapped · {label}"),
+        format!("{} {label}", dim("merma wrapped ·")),
+    )]);
+
+    let mut g = Vec::new();
+    let v = usd(extracted);
+    g.push(row(
+        "extracted (API-equivalent)".into(),
+        v.clone(),
+        dim("extracted (API-equivalent)"),
+        bold(&v),
     ));
-    lines.push(format!(
-        "  subscriptions cost           {}",
-        usd(plan_total)
+    let v = usd(output_only);
+    g.push(row(
+        "output-only floor".into(),
+        v.clone(),
+        dim("output-only floor"),
+        v.clone(),
+    ));
+    let v = usd(plan_total);
+    g.push(row(
+        "subscriptions cost".into(),
+        v.clone(),
+        dim("subscriptions cost"),
+        v.clone(),
     ));
     if multiplier.is_finite() {
-        lines.push(format!("  multiplier                   {multiplier:.1}×"));
-    }
-    lines.push(String::new());
-    for r in reports {
-        let name = match r.provider.as_str() {
-            "codex" => "Codex ",
-            _ => "Claude",
-        };
-        lines.push(format!(
-            "  {name}  {}  ({})",
-            usd(match r.cache_mode {
-                CacheMode::Full => r.api.full_usd,
-                CacheMode::OutputOnly => r.api.output_only_usd,
-            }),
-            r.plan_label
+        let v = format!("{multiplier:.1}×");
+        g.push(row(
+            "multiplier".into(),
+            v.clone(),
+            dim("multiplier"),
+            bold(&v),
         ));
     }
-    lines.push(String::new());
+    groups.push(g);
+
+    let mut g = Vec::new();
+    for r in reports {
+        let l = format!("{:<9}{}", r.provider, r.plan_label);
+        let v = usd(match r.cache_mode {
+            CacheMode::Full => r.api.full_usd,
+            CacheMode::OutputOnly => r.api.output_only_usd,
+        });
+        g.push(row(l.clone(), v.clone(), dim(&l), v.clone()));
+    }
+    groups.push(g);
+
+    let mut g = Vec::new();
     if let Some((w, v)) = best {
-        lines.push(format!("  best week   {} · {}", date(*w), usd(*v)));
+        let val = usd(*v);
+        g.push(row(
+            format!("best week   {}", date(*w)),
+            val.clone(),
+            format!("{}   {}", dim("best week"), date(*w)),
+            val.clone(),
+        ));
     }
     if have_waste {
         let floored = reports
             .iter()
             .any(|r| r.max_extraction.as_ref().is_some_and(|m| m.floored));
-        if (waste_hi - waste_lo).abs() < 0.005 || floored {
-            lines.push(format!("  left on the table (est.)  ≥ {}", usd(waste_lo)));
+        let val = if (waste_hi - waste_lo).abs() < 0.005 || floored {
+            format!("≥ {}", usd(waste_lo))
         } else {
-            lines.push(format!(
-                "  left on the table (est.)  {} – {}",
-                usd(waste_lo),
-                usd(waste_hi)
-            ));
-        }
+            format!("{} – {}", usd(waste_lo), usd(waste_hi))
+        };
+        g.push(row(
+            "left on the table (est.)".into(),
+            val.clone(),
+            dim("left on the table (est.)"),
+            bold(&val),
+        ));
     }
     if !weeks.is_empty() {
-        lines.push(format!("  weeks  {spark}"));
+        g.push(left(
+            format!("weeks   {spark}"),
+            format!("{}   {spark}", dim("weeks")),
+        ));
     }
+    groups.push(g);
+
+    let mut g = Vec::new();
     for r in reports {
         if let Some(u) = &r.utilization {
-            lines.push(format!(
-                "  {} peak utilization {:.0}% of plan",
-                r.provider, u.weighted_peak_pct
-            ));
+            let l = format!("{} peak utilization", r.provider);
+            let v = format!("{:.0}% of plan", u.weighted_peak_pct);
+            g.push(row(l.clone(), v.clone(), dim(&l), v.clone()));
         }
     }
+    groups.push(g);
 
-    // Box it.
-    let width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) + 2;
+    // Geometry: inner content width fits every "label + 3-space gap + value"
+    // pair, floored at 46; 3-cell interior side padding; values right-aligned.
+    let inner = groups
+        .iter()
+        .flatten()
+        .map(|r| {
+            r.l.chars().count()
+                + if r.r.is_empty() {
+                    0
+                } else {
+                    3 + r.r.chars().count()
+                }
+        })
+        .max()
+        .unwrap_or(0)
+        .max(46);
+
     let mut out = String::new();
-    out.push_str(&format!("╭{}╮\n", "─".repeat(width)));
-    for l in &lines {
-        let pad = width - l.chars().count() - 1;
-        out.push_str(&format!("│ {}{}│\n", l, " ".repeat(pad)));
+    let rule = "─".repeat(inner + 6);
+    let blank = format!("{}{}{}\n", dim("│"), " ".repeat(inner + 6), dim("│"));
+    out.push_str(&format!("{}\n", dim(&format!("╭{rule}╮"))));
+    out.push_str(&blank);
+    for (i, g) in groups.iter().filter(|g| !g.is_empty()).enumerate() {
+        if i > 0 {
+            out.push_str(&blank);
+        }
+        for r in g {
+            let content = if r.r.is_empty() {
+                format!("{}{}", r.ls, " ".repeat(inner - r.l.chars().count()))
+            } else {
+                let gap = inner - r.l.chars().count() - r.r.chars().count();
+                format!("{}{}{}", r.ls, " ".repeat(gap), r.rs)
+            };
+            out.push_str(&format!("{}   {content}   {}\n", dim("│"), dim("│")));
+        }
     }
-    out.push_str(&format!("╰{}╯\n", "─".repeat(width)));
+    out.push_str(&blank);
+    out.push_str(&format!("{}\n", dim(&format!("╰{rule}╯"))));
     out
 }
