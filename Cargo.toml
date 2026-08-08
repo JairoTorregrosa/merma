@@ -2,8 +2,14 @@
 name = "merma"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 description = "AI-subscription waste meter: how much of your Claude Code and Codex plans you left on the table"
-license = "MIT"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/JairoTorregrosa/merma"
+readme = "README.md"
+keywords = ["claude", "codex", "usage", "subscription", "tui"]
+categories = ["command-line-utilities", "visualization"]
+exclude = ["assets/", ".github/"]
 
 [dependencies]
 anyhow = "1"
@@ -28,3 +34,4 @@ tempfile = "3"
 lto = true
 strip = true
 opt-level = 3
+codegen-units = 1
