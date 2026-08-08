@@ -263,66 +263,6 @@ cached_input = 0.125
 output = 10.0
 approx = true
 
-# ───────────────────────────── Codex credit rate card ─────────────────────────────
-# credits per 1M tokens (input / cached_input / output), effective 2026-04-02.
-# Cache writes are NOT charged credits on subscription.
-
-[[codex_credits]]
-prefix = "gpt-5.6-sol"
-from = "2026-04-02"
-input = 125.0
-cached_input = 12.5
-output = 750.0
-
-[[codex_credits]]
-prefix = "gpt-5.6-terra"
-from = "2026-04-02"
-input = 50.0
-cached_input = 5.0
-output = 300.0
-
-[[codex_credits]]
-prefix = "gpt-5.6-luna"
-from = "2026-04-02"
-input = 5.0
-cached_input = 0.5
-output = 30.0
-
-[[codex_credits]]
-prefix = "gpt-5.5-cyber"
-from = "2026-04-02"
-input = 312.5
-cached_input = 31.25
-output = 1875.0
-
-[[codex_credits]]
-prefix = "gpt-5.5"
-from = "2026-04-02"
-input = 125.0
-cached_input = 12.5
-output = 750.0
-
-[[codex_credits]]
-prefix = "gpt-5.4-mini"
-from = "2026-04-02"
-input = 18.75
-cached_input = 1.875
-output = 113.0
-
-[[codex_credits]]
-prefix = "gpt-5.4"
-from = "2026-04-02"
-input = 62.5
-cached_input = 6.25
-output = 375.0
-
-[[codex_credits]]
-prefix = "gpt-5.3-codex"
-from = "2026-04-02"
-input = 43.75
-cached_input = 4.375
-output = 350.0
-
 # ───────────────────────────── Subscription plans ─────────────────────────────
 
 [[plan]]
@@ -373,8 +313,3 @@ provider = "codex"
 id = "free"
 monthly_usd = 0.0
 label = "ChatGPT Free"
-
-[constants]
-# No official $/credit exists; community consensus. Configurable here.
-codex_credit_usd = 0.04
-codex_credit_usd_approx = true

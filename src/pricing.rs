@@ -50,16 +50,6 @@ pub struct OpenAiPriceRaw {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct CreditRateRaw {
-    pub prefix: String,
-    pub from: String,
-    pub until: Option<String>,
-    pub input: f64,
-    pub cached_input: f64,
-    pub output: f64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct Plan {
     pub provider: String,
     pub id: String,
@@ -69,20 +59,14 @@ pub struct Plan {
     pub approx: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct Constants {
-    pub codex_credit_usd: f64,
-    #[serde(default)]
-    pub codex_credit_usd_approx: bool,
-}
-
+/// Unknown top-level tables in a user override (e.g. a leftover credits table
+/// from v0.1) are ignored by serde — the credits chain is deleted, and an old
+/// override must not brick the load.
 #[derive(Debug, Deserialize)]
 struct PriceFile {
     claude: Vec<ClaudePriceRaw>,
     openai: Vec<OpenAiPriceRaw>,
-    codex_credits: Vec<CreditRateRaw>,
     plan: Vec<Plan>,
-    constants: Constants,
 }
 
 #[derive(Debug, Clone)]
@@ -111,19 +95,10 @@ pub struct OpenAiRates {
     pub cache_write: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct CreditRates {
-    pub input: f64,
-    pub cached: f64,
-    pub output: f64,
-}
-
 pub struct PriceBook {
     claude: Vec<DatedEntry<ClaudeRates>>,
     openai: Vec<DatedEntry<OpenAiRates>>,
-    credits: Vec<DatedEntry<CreditRates>>,
     pub plans: Vec<Plan>,
-    pub constants: Constants,
     pub source: String, // "embedded" or the override path
 }
 
@@ -136,9 +111,9 @@ fn pick<'a, T>(entries: &'a [DatedEntry<T>], model: &str, ts: i64) -> Option<&'a
 }
 
 impl PriceBook {
-    /// (claude, openai, credit-rate) entry counts, for diagnostics.
-    pub fn entry_counts(&self) -> (usize, usize, usize) {
-        (self.claude.len(), self.openai.len(), self.credits.len())
+    /// (claude, openai) entry counts, for diagnostics.
+    pub fn entry_counts(&self) -> (usize, usize) {
+        (self.claude.len(), self.openai.len())
     }
 
     pub fn load(override_path: Option<&Path>) -> Result<Self> {
@@ -153,19 +128,17 @@ impl PriceBook {
         let raw: PriceFile = toml::from_str(&text).with_context(|| {
             format!("invalid price table ({source}) — refusing to guess prices")
         })?;
-        if raw.claude.is_empty() || raw.openai.is_empty() || raw.codex_credits.is_empty() {
+        if raw.claude.is_empty() || raw.openai.is_empty() {
             bail!(
                 "price table ({source}) has empty sections — refusing to run with no prices \
-                 (an override must include [[claude]], [[openai]] and [[codex_credits]]; \
-                 copy missing sections from the embedded prices.toml)"
+                 (an override must include [[claude]] and [[openai]]; copy missing sections \
+                 from the embedded prices.toml)"
             );
         }
         let mut book = PriceBook {
             claude: Vec::new(),
             openai: Vec::new(),
-            credits: Vec::new(),
             plans: raw.plan,
-            constants: raw.constants,
             source,
         };
         for c in raw.claude {
@@ -205,24 +178,6 @@ impl PriceBook {
                 },
                 approx: o.approx,
                 prefix: o.prefix,
-            });
-        }
-        for c in raw.codex_credits {
-            book.credits.push(DatedEntry {
-                from: date_to_epoch(&c.from)?,
-                until: c
-                    .until
-                    .as_deref()
-                    .map(date_to_epoch)
-                    .transpose()?
-                    .unwrap_or(i64::MAX),
-                price: CreditRates {
-                    input: c.input,
-                    cached: c.cached_input,
-                    output: c.output,
-                },
-                approx: false,
-                prefix: c.prefix,
             });
         }
         book.validate()?;
@@ -281,9 +236,6 @@ impl PriceBook {
             v.extend(r.cache_write);
             v
         })?;
-        check_entries(&self.credits, "codex_credits", src, |r: &CreditRates| {
-            vec![r.input, r.cached, r.output]
-        })?;
         for (i, a) in self.plans.iter().enumerate() {
             if !a.monthly_usd.is_finite() || a.monthly_usd < 0.0 {
                 bail!(
@@ -304,9 +256,6 @@ impl PriceBook {
                 );
             }
         }
-        if !self.constants.codex_credit_usd.is_finite() || self.constants.codex_credit_usd < 0.0 {
-            bail!("price table ({src}): constants.codex_credit_usd is negative or non-finite");
-        }
         Ok(())
     }
 
@@ -326,10 +275,6 @@ impl PriceBook {
         pick(&self.openai, model, ts).map(|e| (e, e.price))
     }
 
-    pub fn credit_rates(&self, model: &str, ts: i64) -> Option<CreditRates> {
-        pick(&self.credits, model, ts).map(|e| e.price)
-    }
-
     pub fn plan(&self, provider: &str, id: &str) -> Option<&Plan> {
         self.plans
             .iter()
@@ -337,12 +282,12 @@ impl PriceBook {
     }
 }
 
-/// Cost of one normalized usage event, in USD at API list prices.
+/// Cost of one normalized usage event, in USD at API list prices —
+/// full API-equivalent (everything the API would bill, incl. cache traffic).
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct EventCost {
-    pub full_usd: f64, // everything the API would bill (incl. cache reads + writes)
-    pub output_only_usd: f64, // just output tokens — the cache-skeptic view
-    pub approx: bool,  // priced from an era-approximate entry
+    pub full_usd: f64,
+    pub approx: bool, // priced from an era-approximate entry
 }
 
 pub fn claude_event_cost(book: &PriceBook, e: &crate::store::UsageEvent) -> Option<EventCost> {
@@ -358,7 +303,6 @@ pub fn claude_event_cost(book: &PriceBook, e: &crate::store::UsageEvent) -> Opti
         + e.output as f64 * r.output * m;
     Some(EventCost {
         full_usd: full,
-        output_only_usd: e.output as f64 * r.output * m,
         approx: entry.approx || e.cache_w_unsplit > 0,
     })
 }
@@ -373,20 +317,8 @@ pub fn codex_event_cost(book: &PriceBook, e: &crate::store::UsageEvent) -> Optio
         + e.output as f64 * r.output * m;
     Some(EventCost {
         full_usd: full,
-        output_only_usd: e.output as f64 * r.output * m,
         approx: entry.approx || (e.cache_w_unsplit > 0 && r.cache_write.is_none()),
     })
-}
-
-/// Codex credits consumed by one event (None before the credit era or unknown model).
-pub fn codex_event_credits(book: &PriceBook, e: &crate::store::UsageEvent) -> Option<f64> {
-    let r = book.credit_rates(&e.model, e.ts)?;
-    let m = 1e-6;
-    Some(
-        e.input as f64 * r.input * m
-            + e.cached_input as f64 * r.cached * m
-            + e.output as f64 * r.output * m,
-    )
 }
 
 /// Models that run through the Codex CLI but not on the OpenAI subscription
@@ -405,7 +337,8 @@ mod tests {
     fn embedded_table_parses() {
         let book = PriceBook::load(None).expect("embedded prices must parse");
         assert!(book.plans.len() >= 5);
-        assert!((book.constants.codex_credit_usd - 0.04).abs() < 1e-9);
+        let (n_claude, n_openai) = book.entry_counts();
+        assert!(n_claude > 0 && n_openai > 0);
     }
 
     #[test]

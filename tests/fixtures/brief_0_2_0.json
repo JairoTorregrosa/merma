@@ -1,0 +1,203 @@
+{
+  "schema_version": "0.2.0",
+  "generated_at": 1786599145,
+  "period": {
+    "requested": "30d",
+    "t0": 1784007145,
+    "t1": 1786599145
+  },
+  "providers": [
+    {
+      "provider": "codex",
+      "plan": {
+        "label": "plus",
+        "monthly_usd": 20.0,
+        "approx": false,
+        "window_cost_usd": 4.599683771740692
+      },
+      "measured": {
+        "t0": 1784007145,
+        "t1": 1786599145,
+        "union_secs": 2592000,
+        "coverage_frac": 1.0
+      },
+      "extracted_usd": 41.8,
+      "left_on_table_usd": {
+        "kind": "band",
+        "lo": 46.77142857142857,
+        "med": 65.34285714285714,
+        "hi": 187.29090909090905,
+        "coverage": 0.9375,
+        "n": 5,
+        "approx": false
+      },
+      "basis": {
+        "tier": "CALIBRATED",
+        "window_id": "primary",
+        "regime_minutes": 10080,
+        "n_qualifying": 5,
+        "excluded": [],
+        "band_usd_per_window": {
+          "lo": 20.666666666666668,
+          "med": 25.0,
+          "hi": 53.45454545454545,
+          "coverage": 0.9375,
+          "n": 5,
+          "approx": false
+        },
+        "max_loo_shift": 0.04,
+        "quantization": {
+          "min_dpct": 12.0,
+          "max_rel_widening": 0.09090909090909091
+        },
+        "floor_usd_per_window": 18.6,
+        "bound_usd_per_window": 18.6,
+        "bound_source": {
+          "kind": "week",
+          "start_ts": 1781155945
+        },
+        "certified": {
+          "start_ts": 1780551145,
+          "secs": 2592000,
+          "windows": 4.285714285714286,
+          "extracted_usd": 41.8
+        },
+        "floor_binding": false,
+        "window_worth_multiple": 5.43515625,
+        "period_windows": 4.285714285714286,
+        "insufficient": null,
+        "fractional_pct_observed": false
+      },
+      "open_windows": [
+        {
+          "window_id": "primary",
+          "operative": true,
+          "used_pct": 27.0,
+          "resets_at": 1786984345,
+          "gap_usd": {
+            "kind": "band",
+            "lo": 15.086666666666668,
+            "med": 18.25,
+            "hi": 39.02181818181818,
+            "coverage": 0.9375,
+            "n": 5,
+            "approx": false
+          },
+          "certified": null,
+          "capture": {
+            "needed_per_day": {
+              "lo": 3.3839252336448604,
+              "med": 4.093457943925234,
+              "hi": 8.752557349192864
+            },
+            "remaining_secs": 385200,
+            "age_frac": 0.3630952380952381,
+            "pace": {
+              "kind": "calibrated",
+              "checkpoint_pct": 25,
+              "median_used_at_checkpoint": 22.0,
+              "curve_n": 5,
+              "curve_skipped": 0
+            }
+          },
+          "context": null
+        }
+      ],
+      "decision": {
+        "verdict": "KEEP",
+        "return_multiple": 2.120435625,
+        "extracted_usd": 41.8,
+        "plan_cost_measured_usd": 19.712930450317256,
+        "threshold_keep": 1.0,
+        "approx": false,
+        "reason": null
+      },
+      "notes": [],
+      "errors": []
+    },
+    {
+      "provider": "claude",
+      "plan": {
+        "label": "max_20x",
+        "monthly_usd": 200.0,
+        "approx": false,
+        "window_cost_usd": 45.996837717406926
+      },
+      "measured": {
+        "t0": 1786244905,
+        "t1": 1786599145,
+        "union_secs": 354240,
+        "coverage_frac": 0.13666666666666666
+      },
+      "extracted_usd": 138.4,
+      "left_on_table_usd": null,
+      "basis": {
+        "tier": "INSUFFICIENT",
+        "window_id": "seven_day",
+        "regime_minutes": 10080,
+        "n_qualifying": 1,
+        "excluded": [],
+        "band_usd_per_window": null,
+        "max_loo_shift": null,
+        "quantization": {
+          "min_dpct": 36.0,
+          "max_rel_widening": 0.02857142857142857
+        },
+        "floor_usd_per_window": null,
+        "bound_usd_per_window": null,
+        "bound_source": null,
+        "certified": null,
+        "floor_binding": false,
+        "window_worth_multiple": null,
+        "period_windows": 0.5857142857142857,
+        "insufficient": {
+          "needed_instances": 3,
+          "missing": "3 more qualifying seven_day instances with >=10 pt observed growth",
+          "unlocks_at": 1788664105,
+          "path": "structural",
+          "demoted_by": null
+        },
+        "fractional_pct_observed": false
+      },
+      "open_windows": [
+        {
+          "window_id": "seven_day",
+          "operative": true,
+          "used_pct": 36.0,
+          "resets_at": 1786847545,
+          "gap_usd": null,
+          "gap_reason": "uncalibrated and no achieved-window bound yet",
+          "certified": null,
+          "capture": null,
+          "context": null
+        },
+        {
+          "window_id": "five_hour",
+          "operative": false,
+          "used_pct": 62.0,
+          "resets_at": 1786606945,
+          "gap_usd": null,
+          "gap_reason": "non-operative — the operative window carries the dollars",
+          "certified": null,
+          "capture": null,
+          "context": {
+            "median_peak_pct": 41.0,
+            "n": 3,
+            "hit_100": 0
+          }
+        }
+      ],
+      "decision": {
+        "verdict": "KEEP",
+        "return_multiple": 5.137150609756098,
+        "extracted_usd": 138.4,
+        "plan_cost_measured_usd": 26.941004948766913,
+        "threshold_keep": 1.0,
+        "approx": false,
+        "reason": null
+      },
+      "notes": [],
+      "errors": []
+    }
+  ]
+}

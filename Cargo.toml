@@ -1,28 +1,25 @@
 [package]
 name = "merma"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
-description = "AI-subscription waste meter: how much of your Claude Code and Codex plans you left on the table"
+description = "Measures the dollars you leave on the table in your Claude Code and Codex subscriptions"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/JairoTorregrosa/merma"
 readme = "README.md"
-keywords = ["claude", "codex", "usage", "subscription", "tui"]
-categories = ["command-line-utilities", "visualization"]
+keywords = ["claude", "codex", "usage", "subscription", "cli"]
+categories = ["command-line-utilities"]
 exclude = ["assets/", ".github/"]
 
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.28"
 dirs = "5"
 memchr = "2"
-ratatui = "0.29"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
 toml = "0.8"
 ureq = { version = "2", features = ["json"] }
 walkdir = "2"

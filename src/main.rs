@@ -1,20 +1,20 @@
-//! merma — the AI-subscription waste meter.
+//! merma — measures the dollars you leave on the table in the AI
+//! subscriptions you pay for.
 //!
-//! Shows how much of your Claude Code and Codex subscriptions you actually
-//! extracted vs. left on the table, priced in API-equivalent dollars.
+//! `merma` (no args) prints the brief: left on the table over the period,
+//! the live gap per open window, the confidence basis, and the decision.
 
+mod brief;
 mod collectors;
 mod config;
 mod doctor;
 mod engine;
+mod fmt;
 mod install;
 mod pricing;
-mod report;
 mod scan;
 mod store;
 mod theme;
-mod ui;
-mod wrapped;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -26,46 +26,25 @@ use store::Store;
 #[command(
     name = "merma",
     version,
-    about = "AI-subscription waste meter: what you extracted vs. what you left on the table",
+    about = "What your AI subscriptions leave on the table — estimated from your own history",
     long_about = None
 )]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
-    /// Machine-readable JSON output (report/doctor/status/scan)
+    /// Brief period: 7d, 30d, 90d, 365d, all, or Nd
+    #[arg(long, default_value = "30d")]
+    period: String,
+    /// claude, codex, or both
+    #[arg(long)]
+    provider: Option<String>,
+    /// Machine-readable JSON output (brief/status/doctor/scan)
     #[arg(long, global = true)]
     json: bool,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Retrospective waste report
-    Report {
-        /// 7d, 30d, 90d, 365d, all, or Nd
-        #[arg(long, default_value = "30d")]
-        period: String,
-        /// claude, codex, or both
-        #[arg(long)]
-        provider: Option<String>,
-        /// full (cache-included) or output-only
-        #[arg(long, default_value = "full")]
-        cache: String,
-    },
-    /// Shareable recap card
-    Wrapped {
-        /// 30d, 365d, all, or Nd
-        #[arg(long, default_value = "30d")]
-        period: String,
-        #[arg(long, default_value = "full")]
-        cache: String,
-    },
-    /// Incremental scan of local history (transcripts + rollouts + spool)
-    Scan,
-    /// Scan + live polls (used by the launchd agent)
-    Collect {
-        #[arg(long)]
-        quiet: bool,
-    },
     /// Install the statusline hook (and optionally a launchd collector)
     Install {
         #[arg(long)]
@@ -79,10 +58,17 @@ enum Cmd {
     },
     /// Undo `merma install`
     Uninstall,
-    /// Diagnose every data source, with live cross-checks
-    Doctor,
+    /// Incremental scan of local history (transcripts + rollouts + spool)
+    Scan,
+    /// Scan + live polls (used by the launchd agent)
+    Collect {
+        #[arg(long)]
+        quiet: bool,
+    },
     /// One-line current status (for scripts and statuslines)
     Status,
+    /// Diagnose every data source, with live cross-checks
+    Doctor,
     /// Internal: Claude Code statusline hook (reads feed on stdin)
     #[command(hide = true)]
     StatuslineHook,
@@ -99,7 +85,7 @@ fn main() {
     }
 }
 
-/// Ingestion problems must reach the user on EVERY read path — a report over
+/// Ingestion problems must reach the user on EVERY read path — a brief over
 /// silently incomplete data would present lower extracted dollars as fact.
 fn surface_scan_problems(sum: &collectors::ScanSummary) {
     for w in &sum.warnings {
@@ -127,46 +113,21 @@ fn run(cli: Cli) -> Result<i32> {
     let now = chrono::Utc::now().timestamp();
 
     match cli.cmd {
+        // The brief — TTY-styled, piped-plain, `--json` for the 0.2.0 contract.
         None => {
-            use std::io::IsTerminal;
-            if !std::io::stdout().is_terminal() {
-                anyhow::bail!(
-                    "the dashboard needs a TTY — use `merma report`, `merma status` or --json \
-                     for non-interactive output"
+            surface_scan_problems(&scan::run_scan(&mut store, &cfg)?);
+            let (t0, t1, label) = brief::parse_period(&cli.period, now)?;
+            let provs = brief::providers_from_flag(cli.provider.as_deref())?;
+            let reports = brief::build_reports(&store, &book, &cfg, &provs, t0, t1)?;
+            if cli.json {
+                let json = brief::brief_json(reports, &cli.period, t0, t1);
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            } else {
+                let requested = cli.period.trim().to_lowercase();
+                print!(
+                    "{}",
+                    brief::render_brief(&reports, &label, &requested, t1, brief::BRIEF_WRAP_WIDTH)
                 );
-            }
-            // Live dashboard: fresh scan first, polls continue inside the UI.
-            let sum = scan::run_scan(&mut store, &cfg)?;
-            ui::run_dashboard(store, cfg, book, sum)?;
-            Ok(0)
-        }
-        Some(Cmd::Report {
-            period,
-            provider,
-            cache,
-        }) => {
-            surface_scan_problems(&scan::run_scan(&mut store, &cfg)?);
-            let (t0, t1, label) = report::parse_period(&period, now)?;
-            let mode = report::parse_cache_mode(&cache)?;
-            let provs = report::providers_from_flag(provider.as_deref())?;
-            let reports = report::build_reports(&store, &book, &cfg, &provs, t0, t1, mode)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&reports)?);
-            } else {
-                print!("{}", report::render_text(&reports, &label));
-            }
-            Ok(0)
-        }
-        Some(Cmd::Wrapped { period, cache }) => {
-            surface_scan_problems(&scan::run_scan(&mut store, &cfg)?);
-            let (t0, t1, label) = report::parse_period(&period, now)?;
-            let mode = report::parse_cache_mode(&cache)?;
-            let provs = report::providers_from_flag(None)?;
-            let reports = report::build_reports(&store, &book, &cfg, &provs, t0, t1, mode)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&reports)?);
-            } else {
-                print!("{}", wrapped::render(&reports, &label));
             }
             Ok(0)
         }
@@ -236,35 +197,14 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Some(Cmd::Status) => {
             surface_scan_problems(&scan::run_scan(&mut store, &cfg)?);
-            let (t0, t1, _) = report::parse_period("7d", now)?;
-            let provs = report::providers_from_flag(None)?;
-            let reports = report::build_reports(
-                &store,
-                &book,
-                &cfg,
-                &provs,
-                t0,
-                t1,
-                engine::waste::CacheMode::Full,
-            )?;
+            let (t0, t1, _) = brief::parse_period("30d", now)?;
+            let provs = brief::providers_from_flag(None)?;
+            let reports = brief::build_reports(&store, &book, &cfg, &provs, t0, t1)?;
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&reports)?);
+                let json = brief::brief_json(reports, "30d", t0, t1);
+                println!("{}", serde_json::to_string_pretty(&json)?);
             } else {
-                let mut parts = Vec::new();
-                for r in &reports {
-                    for w in &r.windows {
-                        if let Some((_, pct, resets)) = w.current {
-                            let eta = resets
-                                .map(|ra| report::dur_short((ra - now).max(0)))
-                                .unwrap_or_else(|| "?".into());
-                            parts.push(format!(
-                                "{} {} {:.0}% (resets {eta})",
-                                r.provider, w.window_id, pct
-                            ));
-                        }
-                    }
-                }
-                println!("{}", parts.join(" · "));
+                println!("{}", brief::render_status(&reports, now));
             }
             Ok(0)
         }

@@ -28,7 +28,7 @@ pub const CLAUDE_WINDOWS: &[(&str, i64)] = &[
 ];
 
 /// Entry point for `merma statusline-hook`. Reads the feed from stdin, spools
-/// a snapshot, chains to the wrapped statusline, prints its output.
+/// a snapshot, chains to the previous statusline command, prints its output.
 pub fn run_hook(cfg: &Cfg) -> i32 {
     let mut input = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut input) {

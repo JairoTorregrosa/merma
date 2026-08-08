@@ -52,6 +52,6 @@ esac
 echo
 echo "next steps:"
 echo "  merma scan      # first ingest of local history"
-echo "  merma report    # the waste report"
-echo "  merma           # the live dashboard"
+echo "  merma           # the brief: left on the table, live gap, decision"
+echo "  merma status    # one line for scripts and statuslines"
 echo "  merma doctor    # check every data source"

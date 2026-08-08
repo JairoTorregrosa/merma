@@ -1,11 +1,14 @@
-//! Presentation-only styling shim for the text surfaces (report / wrapped /
-//! doctor).
+//! Presentation-only styling shim for the text surfaces (brief / doctor).
 //!
 //! ANSI escapes are emitted only when stdout is a real terminal AND `NO_COLOR`
 //! is unset — piped output stays byte-plain, so scripts and tests see exactly
 //! the template text. All width/padding math must run on plain strings BEFORE
 //! painting; never measure a painted string. `--json` branches must never call
 //! into this module.
+//!
+//! v0.1's teal accent was graphic ink only; v0.2 deleted every graphic
+//! surface, so teal is retired by decision (DESIGN.md), not omission. If a
+//! graphic surface ever returns, teal returns with it.
 
 use std::io::IsTerminal;
 use std::sync::OnceLock;
@@ -36,7 +39,7 @@ pub fn dim(s: &str) -> String {
     paint("90", s)
 }
 
-/// Yellow — reserved for the `⚠` glyph and the single word `UNSTABLE`.
+/// Yellow — reserved for the `⚠` glyph.
 pub fn warn(s: &str) -> String {
     paint("33", s)
 }

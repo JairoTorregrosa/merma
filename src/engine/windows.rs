@@ -39,9 +39,6 @@ impl WindowInstance {
     pub fn covered_secs(&self) -> i64 {
         (self.last_ts() - self.first_ts()).max(0)
     }
-    pub fn first_pct(&self) -> f64 {
-        self.points.first().map(|p| p.1).unwrap_or(0.0)
-    }
     pub fn peak_pct(&self) -> f64 {
         self.points.iter().map(|p| p.1).fold(0.0, f64::max)
     }
@@ -54,10 +51,6 @@ impl WindowInstance {
             .find(|p| p.1 >= peak)
             .map(|p| p.0)
             .unwrap_or(0)
-    }
-    /// Observed percent growth: peak minus first observation.
-    pub fn dpct(&self) -> f64 {
-        (self.peak_pct() - self.first_pct()).max(0.0)
     }
 }
 
@@ -181,7 +174,8 @@ mod tests {
         assert_eq!(inst.len(), 2);
         assert_eq!(inst[0].points.len(), 2);
         assert!((inst[0].peak_pct() - 20.0).abs() < 1e-9);
-        assert!((inst[1].dpct() - 2.0).abs() < 1e-9);
+        let growth = inst[1].peak_pct() - inst[1].points.first().unwrap().1;
+        assert!((growth - 2.0).abs() < 1e-9);
     }
 
     #[test]

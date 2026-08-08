@@ -54,28 +54,14 @@ pub fn run(store: &mut Store, cfg: &Cfg, book: &PriceBook) -> Result<Vec<Check>>
     ));
 
     // ── price tables ──
-    let (n_claude, n_openai, n_credits) = book.entry_counts();
-    let mut price_detail = format!(
-        "{} — {n_claude} claude, {n_openai} openai, {n_credits} credit-rate entries",
-        book.source
-    );
-    if let Some(raw) = store.meta_get("codex_credits")? {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
-            let bal = v
-                .pointer("/balance")
-                .and_then(|x| x.as_str())
-                .unwrap_or("?");
-            let unlimited = v
-                .pointer("/unlimited")
-                .and_then(|x| x.as_bool())
-                .unwrap_or(false);
-            price_detail.push_str(&format!(
-                " · codex credit balance {bal}{}",
-                if unlimited { " (unlimited)" } else { "" }
-            ));
-        }
-    }
-    checks.push(ok("prices", price_detail));
+    let (n_claude, n_openai) = book.entry_counts();
+    checks.push(ok(
+        "prices",
+        format!(
+            "{} — {n_claude} claude, {n_openai} openai entries",
+            book.source
+        ),
+    ));
 
     // ── historical parse loss ──
     match store
@@ -188,8 +174,7 @@ pub fn run(store: &mut Store, cfg: &Cfg, book: &PriceBook) -> Result<Vec<Check>>
     }
 
     // ── claude plan ──
-    let book = crate::pricing::PriceBook::load(Some(&cfg.prices_override_path()))?;
-    match cfg.claude_plan(&book) {
+    match cfg.claude_plan(book) {
         Ok((label, usd, _)) => checks.push(ok("claude plan", format!("{label} (${usd}/mo)"))),
         Err(e) => checks.push(fail("claude plan", format!("{e:#}"))),
     }
@@ -269,11 +254,98 @@ pub fn run(store: &mut Store, cfg: &Cfg, book: &PriceBook) -> Result<Vec<Check>>
         match store.usage_bounds(p)? {
             Some((lo, hi)) => checks.push(ok(
                 &format!("{p} usage history"),
-                format!("{} → {}", crate::report::date(lo), crate::report::date(hi)),
+                format!("{} → {}", crate::fmt::date(lo), crate::fmt::date(hi)),
             )),
             None => checks.push(warn(
                 &format!("{p} usage history"),
                 "no events ingested yet — run `merma scan`".into(),
+            )),
+        }
+    }
+
+    // ── calibration (the estimator's admission state, per provider) ──
+    let now = chrono::Utc::now().timestamp();
+    for p in [CODEX, CLAUDE] {
+        let name = format!("{p} calibration");
+        match crate::engine::waste::build_provider_report(
+            store,
+            book,
+            cfg,
+            p,
+            now - 30 * 86_400,
+            now,
+        ) {
+            Ok(r) => match &r.basis {
+                Some(b) => {
+                    let mut detail = format!(
+                        "{} · {} qualifying {} instance(s)",
+                        crate::brief::tier_name(b.tier),
+                        b.n_qualifying,
+                        b.window_id
+                    );
+                    if let Some(x) = crate::brief::excluded_phrase(&b.excluded) {
+                        detail.push_str(&format!(" · {x}"));
+                    }
+                    if let Some(i) = &b.insufficient {
+                        if let Some(ts) = i.unlocks_at {
+                            detail.push_str(&format!(" · unlocks ~{}", crate::fmt::date(ts)));
+                        }
+                    }
+                    match b.tier {
+                        crate::engine::estimator::Tier::Insufficient => {
+                            checks.push(warn(&name, detail))
+                        }
+                        _ => checks.push(ok(&name, detail)),
+                    }
+                }
+                None => checks.push(warn(
+                    &name,
+                    "no window data yet — run `merma install` and use the windows".into(),
+                )),
+            },
+            Err(e) => checks.push(warn(&name, format!("{e:#}"))),
+        }
+    }
+
+    // ── used_percent quantization grid ──
+    for p in [CODEX, CLAUDE] {
+        let mut fractional: Option<f64> = None;
+        for s in store.snapshots_between(p, None, 0, i64::MAX)? {
+            if (s.used_percent - s.used_percent.round()).abs() >= 1e-6 {
+                fractional = Some(s.used_percent);
+                break;
+            }
+        }
+        if let Some(pct) = fractional {
+            checks.push(warn(
+                &format!("{p} used_percent grid"),
+                format!(
+                    "non-integer used_percent observed ({pct}) — the quantization model \
+                     may be wrong"
+                ),
+            ));
+        }
+    }
+
+    // ── cross-window attribution consistency (diagnostic, never an adjustment) ──
+    for p in [CODEX, CLAUDE] {
+        match crate::engine::waste::attribution_cross_check(store, book, p, now) {
+            Ok(Some(c)) if !c.mismatches.is_empty() => checks.push(warn(
+                &format!("{p} cross-window attribution"),
+                format!("attribution mismatch — {}", c.mismatches.join("; ")),
+            )),
+            Ok(Some(c)) if c.checked > 0 => checks.push(ok(
+                &format!("{p} cross-window attribution"),
+                format!(
+                    "shorter-window attributions stay inside the long window \
+                     ({} instance(s) checked)",
+                    c.checked
+                ),
+            )),
+            Ok(_) => {} // no concurrent shorter window to cross-check
+            Err(e) => checks.push(warn(
+                &format!("{p} cross-window attribution"),
+                format!("{e:#}"),
             )),
         }
     }
@@ -295,7 +367,10 @@ pub fn render_text(checks: &[Check]) -> String {
         } else {
             c.detail.clone()
         };
-        out.push_str(&format!("{icon} {:<28} {detail}\n", c.name));
+        // The label column fits the longest check name ("claude cross-window
+        // attribution", 31 cells) padded to 32 so, with the literal space in
+        // the format string, every detail keeps a ≥ 2-space gutter.
+        out.push_str(&format!("{icon} {:<32} {detail}\n", c.name));
     }
     out
 }

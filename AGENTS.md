@@ -52,7 +52,8 @@ project safely. If you are a human, read [README.md](README.md).
   and `merma uninstall`.
 - Do not delete or rename an existing statusline script. merma chains
   to it and it is the rollback.
-- Do not shorten the poll cadences below the built-in minimums.
+- Do not schedule `merma collect` more often than the launchd
+  default (15 minutes). Each run polls the live endpoints once.
 
 ## Task: contribute a change
 
@@ -82,11 +83,12 @@ project safely. If you are a human, read [README.md](README.md).
   you report done. CI enforces both, plus `cargo fmt --check`.
 - Every estimate must scale by the measured span (interval union), never
   by the requested period.
-- Every new warning or note must reach every read path: report, wrapped,
-  status, doctor, and the dashboard footer.
+- Every new warning or note must reach every read path: brief, status,
+  doctor.
 - Never hardcode a billing-window duration. Reconstruct windows from
   snapshot data.
 - New parser beliefs need a fixture test from real data. Fixtures live
   in `tests/fixtures/`.
 - `--json` output is a contract. Renderers may change; serialized fields
-  may only grow.
+  may only grow WITHIN a schema_version. The 0.2.0 reset (breaking from
+  the 0.1.x report shape) is documented in README §`--json`.

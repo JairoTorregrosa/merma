@@ -110,9 +110,6 @@ pub fn poll(store: &mut Store, cfg: &Cfg) -> Result<Vec<Snapshot>> {
         );
     }
     store.insert_snapshots(&snaps)?;
-    if let Some(credits) = v.get("credits") {
-        store.meta_set("codex_credits", &credits.to_string())?;
-    }
     if let Some(rc) = v.get("rate_limit_reset_credits") {
         store.meta_set("codex_reset_credits", &rc.to_string())?;
     }

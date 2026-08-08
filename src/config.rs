@@ -31,11 +31,10 @@ pub struct FileConfig {
     /// see README "Terms of Service" — easy to switch off).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_oauth_enabled: Option<bool>,
-    /// Poll cadences (seconds).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth_poll_secs: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wham_poll_secs: Option<u64>,
+    // v0.1's `oauth_poll_secs` / `wham_poll_secs` are gone with their only
+    // consumer (the deleted dashboard's refresh loop). `merma collect` polls
+    // once per invocation; the launchd schedule (15 min) sets the cadence.
+    // Unknown keys in existing configs still parse (no deny_unknown_fields).
 }
 
 #[derive(Debug, Clone)]

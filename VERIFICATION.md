@@ -195,3 +195,438 @@ These are conservative by construction:
 Final state at release: 27 tests pass; clippy is clean; `merma doctor`
 is all green on live data; the all-history report shows $3,368 extracted
 against $472 of subscription cost (7.1×).
+
+---
+
+# v0.2 — the estimator rebuild (appended 2026-08-08)
+
+v0.2.0 deletes four surfaces and rebuilds the product around "left on
+the table". The raw-quartile + binary-UNSTABLE estimator of §4 is
+replaced by an exact order-statistic estimator with admission gates,
+quantization propagation, confidence tiers, and a decision layer.
+Everything below was verified on this machine on 2026-08-08. Final
+state: 71 tests pass; fmt and clippy clean.
+
+## 10. Chosen methods, and the alternatives that lost
+
+The full doctrine lives in DESIGN.md; this section records the
+evidence behind each choice so it is not re-litigated without new data.
+
+Chosen:
+
+- **Center** — sample median of per-instance $/window rates, per
+  `(window_id, window_minutes)`. Robust to the real outliers in this
+  DB ($0.50-era rates next to $0.13-era rates).
+- **Band** — the exact distribution-free order-statistic confidence
+  interval for the median (`[x₁,xₙ]` for n ≤ 7, `[x₂,xₙ₋₁]` at n = 8).
+  Exact finite-sample coverage; the only assumption is exchangeability.
+  The achieved coverage prints exactly (§12 verifies the table).
+- **Quantization** — worst-case ±1 outer bound on each instance's
+  integer-quantized growth, with the lo/hi arrays sorted independently
+  of the point rates (`c/(d±1)` is not monotone in `c/d`; the
+  counterexample is a pinned test).
+- **Influence** — max delete-1 median shift, threshold 0.25. Exact,
+  deterministic, answers "does one instance control the number".
+- **Censoring** — reject-and-report through four named admission gates
+  (low growth, unpriced, usage gap, snapshot gap), each exclusion
+  counted and surfaced (§14 shows the real effects).
+- **Floor** — `bound = max(best achieved week scaled to the window,
+  best 100%-instance dollars)`; composes by max with lower edges only.
+
+Rejected, with the reason each lost:
+
+- **Bootstrap** — even the fully-deterministic exhaustive bootstrap
+  (126 multisets at n = 5) has no finite-sample coverage guarantee and
+  undercovers badly at n < 10; at tiny n it degenerates onto the same
+  order statistics the exact interval already uses.
+- **Jackknife SE as headline spread** — inconsistent for the median
+  (Miller 1974; Efron 1982). On the worked fixture it gives SE 1.36
+  against an honest band of width 28 — a ~10× understatement. Retained
+  only as the max-LOO-shift diagnostic.
+- **Student-t on the mean** — the mean is exactly what the outlier
+  corrupts (fixture: mean 29.2 vs median 25); normality uncertifiable
+  on quantized, drift-contaminated n = 5.
+- **Bayesian interval** — any prior on $/pct is a made-up number
+  wearing a posterior; fails "every figure traceable".
+- **Trend/drift regression** — drift is real in this DB (0.25–0.50 era
+  → 0.13 era) but 2 parameters on n = 5 is noise wearing a trend;
+  recency-limiting plus the wide exact band is the defensible
+  treatment. Revisit past ~15 instances.
+- **Kaplan–Meier / formal censoring models** — need dozens of
+  observations; reject-and-count is honest at n ≤ 8.
+- **Hodges–Lehmann + signed-rank CI** — slightly more efficient, but
+  "median of your 5 instances" is head-auditable and "median of 15
+  Walsh averages" is not.
+- **Consecutive-snapshot regression** — already empirically dead in §4
+  (R² < 0); stays dead.
+- **Quadrature error composition** — needs independence and shape
+  assumptions nobody can audit; the independent-sort outer bound is
+  assumption-free.
+- **Linear scaling of an uncalibrated floor for the live gap** —
+  assumes the $/pct constancy the floor precisely lacks; the certified
+  form `bound − extracted_in_window` needs no model.
+
+## 11. Real-data run and re-derivation (2026-08-08)
+
+`merma` (v0.2.0, installed binary) at capture time
+(`generated_at = 1786224123`, 2026-08-08T21:22:03Z), 30-day period.
+Both providers sit in the INSUFFICIENT tier on this machine — the
+weekly regimes are young — so this run exercises the bound path, the
+unlock formula, and the decision layer on live data; the CALIBRATED
+band and MEASURED promotion arithmetic are pinned by the worked-example
+fixtures (`tests/fixtures/brief_0_2_0.json` plus the Example A/C unit
+tests, digit-for-digit).
+
+Codex stanza:
+
+```
+left on table    ≥ $46.32   lower bound · your best achieved window is the bound · 30.0d measured of 30d (100%)
+basis            INSUFFICIENT · 1 of 4 qualifying primary instances (needs 3 more with ≥10 pt growth) · 8 excluded: low growth ×4, usage gap in span ×4
+open now         primary 0% used · ≥ $30.12 left ($30.12 best − $0.00 used this window) · resets in 6d 23h
+decision         plan returned ×4.20 ($82.74 extracted / $19.71 plan cost · 30.0d) — keep (keep ≥ ×1.0)
+```
+
+Every number re-derived by hand from the same run's `--json`:
+
+- Bound: best calendar week $30.12047 (week of 2026-07-20,
+  `bound_source.start_ts = 1784505600`); weekly regime → no scaling.
+- Period lower bound: `30.12047 × (2,591,491 / 604,800) − 82.74201 =
+  30.12047 × 4.2848727 − 82.74201 = 46.3204` → **≥ $46.32**. ✓
+- Live gap (certified form): `30.12047 − 0.00 = 30.12` → ≥ $30.12. ✓
+- Plan cost over the measured span: `20 × 2,591,491 / 2,629,746 =
+  19.70906` → $19.71; multiple `82.74201 / 19.70906 = 4.1982` →
+  **×4.20 — keep**. ✓
+- Unlock: the regime's first snapshot is `1783897559`
+  (2026-07-12T23:05:59Z — the §3 regime-change date), so the raw
+  structural formula gives `1783897559 + 4 × 604,800 = 1786316759`
+  (~2026-08-09) — less than one regime away. One more qualifying
+  instance cannot close before one more cycle elapses, so the clamp
+  `max(raw, now + regime)` applies: `1786224123 + 604,800 =
+  1786828923` → **~2026-08-15**. ✓
+
+Claude stanza: 0 of 4 qualifying `seven_day` instances (the statusline
+hook only began collecting utilization on 2026-08-08); no dollars
+printed anywhere except the measured decision line:
+
+- Plan cost: `200 × 2,592,000 / 2,629,746 = 197.12930` → $197.13;
+  multiple `2985.87625 / 197.12930 = 15.1468` → **×15.15 — keep**. ✓
+- Unlock (structural, no clamp needed): first snapshot
+  `1786158505` (2026-08-08T03:08:25Z) `+ 4 × 604,800 = 1788577705` →
+  **~2026-09-05**. ✓
+
+## 12. Coverage-oracle spot check
+
+Independent recomputation of the pinned coverage table:
+
+```
+$ python3 -c "import math
+cov = lambda n,j,k: sum(math.comb(n,i) for i in range(j,k)) / 2**n
+print([cov(n,1,n) for n in range(2,9)], cov(8,2,7))"
+[0.5, 0.75, 0.875, 0.9375, 0.96875, 0.984375, 0.9921875] 0.9296875
+```
+
+Matches the `coverage_oracle` test constants exactly: outer band
+`[x₁,xₙ]` for n = 2..8 and the inner `[x₂,x₇]` at n = 8 (92.9688%).
+
+## 13. Quantization audit
+
+The float dirt the snap rule was designed for exists in this DB.
+Across 30,346 snapshots, 295 rows carry a non-integer `used_percent`;
+the distinct dirty values are:
+
+```
+7.0000000000000009   14.000000000000002   28.000000000000004
+28.999999999999996   55.000000000000007   56.000000000000007
+56.999999999999993   57.999999999999993
+```
+
+Every one is within 1e-6 of the integer grid (max distance 7.1e-15);
+zero rows are genuinely fractional. The snap rule
+(`PCT_SNAP_EPS = 1e-6`) absorbs all of them; the
+fractional-`used_percent` doctor warning did not fire on this data
+(`fractional_pct_observed: false` in the run's JSON).
+
+±1 outer bound on the real qualifying instance: the one admitted codex
+instance has snapped dpct 36, so its rate interval is
+`[c/37, c/36, c/35] × 100` — max relative widening `36/35 − 1 =
+0.028571`, exactly the `max_rel_widening` the run's JSON reports.
+
+## 14. Gate effects on this machine
+
+From the same run (`basis.excluded`, mirrored by `merma doctor`'s
+calibration checks):
+
+- **codex / primary (weekly)**: 9 closed candidates scanned; 1
+  qualifies (dpct 36). 8 excluded: `low_growth` ×4 (observed growth
+  below 10 points — quantization noise would dominate their rates),
+  `usage_gap` ×4 (holes in the usage-event stream inside the
+  attribution span longer than `max(0.25 × span, 30 min)`; dollars
+  missing while percent grew would bias the rate low, so waste would
+  be understated — rejected).
+- **claude / seven_day**: 1 closed candidate, excluded by `usage_gap`;
+  0 qualify. The hook began collecting on 2026-08-08, so this is the
+  §9 "not yet" case, now with a printed unlock date instead of a
+  shrug.
+
+Doctor renders both as named calibration checks:
+
+```
+⚠ codex calibration    INSUFFICIENT · 1 qualifying primary instance(s) · 8 excluded: low growth ×4, usage gap in span ×4 · unlocks ~2026-08-15
+⚠ claude calibration   INSUFFICIENT · 0 qualifying seven_day instance(s) · 1 excluded: usage gap in span · unlocks ~2026-09-05
+✓ claude cross-window attribution   shorter-window attributions stay inside the long window (1 instance(s) checked)
+```
+
+## 15. Deletion evidence
+
+Acceptance greps, run 2026-08-08 against the working tree:
+
+```
+$ grep -ri "wrapped\|heatmap" src README.md            → no matches
+$ grep -rn "UNSTABLE\|OutputOnly\|codex_credits\|ratatui\|crossterm\|thiserror" src Cargo.toml
+                                                        → no matches
+$ grep -rn "allow(dead_code)" src                       → no matches
+$ cargo tree | grep -ci "ratatui\|crossterm\|thiserror" → 0
+```
+
+Dependency diff, v0.1.0 → v0.2.0 (`Cargo.toml`):
+
+```
+- crossterm = "0.28"
+- ratatui = "0.29"
+- thiserror = "2"
+```
+
+No dependencies added. The v0.1 hits for "wrapped" in this file's own
+§7 are history and stay.
+
+## 16. Statusline hook and launchd agent, post-upgrade
+
+The v0.2.0 binary was installed over v0.1.0 at
+`~/.local/bin/merma`; the AGENTS.md postconditions were re-run:
+
+- `merma --version` → `merma 0.2.0`, exit 0.
+- `echo '{}' | merma statusline-hook` → exit 0, renders the usage
+  context line.
+- `~/.claude/settings.json` still parses; the `statusLine.command`
+  entry is byte-identical to the pre-upgrade value
+  (`/Users/jairo/.local/bin/merma statusline-hook`) — no settings diff.
+- `launchctl list` shows `com.merma.collect` loaded with status 0; the
+  plist mtime predates the upgrade (2026-08-07 21:09) — the agent was
+  not touched. It runs `collect --quiet`, which exercises only
+  collectors + store, none of the deleted code.
+
+## 17. Credits chain removed
+
+The Codex credits pricing chain (`[[codex_credits]]`,
+`codex_event_credits`, `Constants.codex_credit_usd`) is deleted in
+0.2.0. It served exactly one purpose: the §5 credits-coherence
+cross-check (1878 credits ≈ $75.12 vs $80.36 token-priced, ~7%
+agreement) that validated the token math before v0.1 shipped. That
+recorded result stands as evidence; the chain fed no estimate and no
+surface. An override price table no longer needs (and no longer
+validates) a `[[codex_credits]]` section — the §8 note requiring it is
+superseded.
+
+## 18. JSON ↔ text 1:1 spot audit
+
+From the capture-time pair (`merma --json` vs the rendered brief),
+full-precision JSON left, rendered text right, under the fmt.rs rules:
+
+| JSON value | Renders |
+|---|---|
+| `left_on_table_usd.low = 46.32036696793996` | `≥ $46.32` |
+| `gap_usd.low = 30.12047000000002` | `≥ $30.12 left` |
+| `decision.return_multiple = 4.198171547092022` | `×4.20` |
+| `decision.plan_cost_measured_usd = 19.709059354021264` | `$19.71 plan cost` |
+| `decision.extracted_usd = 2985.87624835001` (claude) | `$2,985.88 extracted` |
+| `decision.return_multiple = 15.146790356083036` (claude) | `×15.15` |
+| `insufficient.unlocks_at = 1788577705` | `~2026-09-05` |
+| `measured.union_secs = 2591491` over a 30d request | `30.0d measured of 30d (100%)` |
+
+Every dollar in the JSON is a tagged object (`kind: "floor"` here;
+`kind: "band"` in the committed fixture); `left_on_table_usd` for the
+uncalibrated provider is `null` with the sibling
+`basis.insufficient` reason — never $0. The `text_json_equality` test
+pins this equivalence for every `$` token on every run.
+
+## 19. v0.2 audit fixes and re-derivation (2026-08-08)
+
+An audit of the 2026-08-08 build found two blockers and a set of minor
+defects. §11–§18 stay as recorded — they were true of that binary at
+capture time. This section records the fixes and re-derives the changed
+numbers from a fresh run of the fixed binary
+(`generated_at = 1786227590`, 2026-08-08T22:19:50Z, 30-day period).
+
+**Certified-epoch scaling (blocker).** `bound × period_windows` was
+scaled over the full measured span, which for long periods includes the
+prolite plan stretch (plan history 1780052984–1782535517) and the
+pre-2026-07-12 non-weekly regime — spans over which the current-plan,
+current-regime bound certifies nothing. The `≥` figure now scales only
+over the certified epoch, `max(current-regime start, trailing
+constant-plan-run start)` → measured end, and subtracts the extraction
+inside that epoch (see DESIGN.md "the `≥` period scaling never leaves
+the certified epoch"):
+
+- Epoch start `1783897559` (2026-07-12T23:05:59Z, the §3 regime-change
+  date; the plan run start is earlier so the regime start binds).
+- Certified measured seconds `2,330,000` → `2,330,000 / 604,800 =
+  3.8525132` windows; extraction inside the epoch `$54.016125`.
+- `30.12047 × 3.8525132 − 54.016125 = 62.0234` → **≥ $62.02**, printed
+  with its full arithmetic. ✓
+- The same figure now prints for every period that contains the epoch:
+  `--period all` shows `≥ $62.02 · 257.8d measured`, replacing the
+  uncertified `≥ $407.23` (= 30.12047 × 36.83 all-history windows) the
+  audit flagged. The 30-day figure moved too (was `≥ $46.32` =
+  30.12047 × 4.2849 − 82.74201): the old form scaled 3 pre-regime days
+  and subtracted extraction the epoch never contained.
+
+**Unlock provenance (blocker).** The structural unlock renders
+`max(first_snapshot + 4 regimes, now + 1 regime)`. When the clamp sets
+the date, the note "(4 full windows from the first snapshot)" printed
+arithmetic that does not reproduce it (1783897559 + 4 × 604,800 =
+1786316759 ≈ 2026-08-09, but the brief said ~2026-08-15). The clamped
+case now prints "(one full window from now — the next qualifying
+instance cannot close sooner)": `1786227590 + 604,800 = 1786832390` =
+the run's `insufficient.unlocks_at` → **~2026-08-15**. ✓ The unclamped
+case (Claude, first snapshot 2026-08-08) keeps "(4 full windows from
+the first snapshot)" → ~2026-09-05. ✓ JSON unchanged
+(`path: "structural"`).
+
+The fixed codex stanza, as rendered:
+
+```
+codex — ChatGPT Plus · $20.00/mo
+  left on table    ≥ $62.02             lower bound · $30.12 best window × 3.85 current plan+regime windows (27.0d) −
+                   $54.02 extracted in them · 30.0d measured of 30d (100%)
+  basis            INSUFFICIENT · 1 of 4 qualifying primary instances (needs 3 more with ≥10 pt growth) · 8 excluded:
+                   low growth ×4, usage gap in span ×4
+                   calibrated estimate unlocks ~2026-08-15 at the earliest (one full window from now — the next
+                   qualifying instance cannot close sooner)
+  open now         primary    0% used · ≥ $30.12 left ($30.12 best − $0.00 used this window) · resets in 6d 22h
+  decision         plan returned ×4.20 ($82.74 extracted / $19.71 plan cost · 30.0d) — keep (≥ ×1.0)
+                   capture pace uncalibrated — unlocks with calibration
+  ⚠ non-subscription models excluded from waste math: moonshotai/kimi-k3 (41218 tok)
+```
+
+JSON ↔ text for the new figures, same run, under the fmt.rs rules:
+
+| JSON value | Renders |
+|---|---|
+| `left_on_table_usd.low = 62.02338369391553` | `≥ $62.02` |
+| `basis.bound_usd_per_window = 30.12047000000002` | `$30.12 best window` |
+| `basis.certified.windows = 3.8525132275132274` | `× 3.85 current plan+regime windows` |
+| `basis.certified.secs = 2330000` | `(27.0d)` |
+| `basis.certified.extracted_usd = 54.016125399999886` | `− $54.02 extracted in them` |
+| `insufficient.unlocks_at = 1786832390` | `~2026-08-15` |
+
+Smaller fixes, verified in the same run:
+
+- **Wrap at 120 columns.** The brief self-wraps at a fixed 120 print
+  columns (word boundaries only, continuations indented to the value
+  column); previously lines reached 159 columns and relied on the
+  terminal. Fixed-width by decision — terminal detection would need a
+  new dependency. The golden line budget counts non-diagnostic lines;
+  `⚠`/`✗` lines are exempt (they may never be dropped to fit), which
+  resolves the `--period all` stanza the audit flagged at 11 raw lines:
+  7 content lines + 4 exempt notes.
+- **Decision wording.** `keep (keep ≥ ×1.0)` → `keep (≥ ×1.0)`; the
+  verdict word is the threshold's name and printed once. Downgrade and
+  straddle branches keep the full name (`below keep ≥ ×1.0`).
+- **decide() never fabricates a midpoint.** A ranged, non-straddling
+  operand (unreachable in the binary; pinned by test) now reports the
+  conservative endpoint with the matching extracted operand, so
+  extracted / plan equals the printed multiple exactly.
+- **`COMPLETE_WINDOW_MIN_FRAC = 0.75`** joined the pinned-constants
+  table and the `pinned_constants` regression test.
+- **Doctor label column** widened to 31 cells so
+  `claude cross-window attribution` no longer pushes its detail out of
+  the shared column.
+- **Poll-cadence orphans deleted.** `oauth_poll_secs` /
+  `wham_poll_secs` lost their only consumer with the v0.1 dashboard;
+  the keys, their README rows, and the minimum-cadence prohibition are
+  gone. `merma collect` polls once per invocation; the launchd
+  schedule (15 min) is the cadence, and AGENTS.md now says exactly
+  that. Existing configs with the old keys still parse.
+- **Teal retired by decision** (DESIGN.md): it was graphic ink only and
+  v0.2 deleted every graphic surface.
+- **README status example** regenerated from real output (the old one
+  showed a CALIBRATED band this machine has never produced);
+  `assets/report.svg` renamed to `assets/brief.svg`; "one screen per
+  provider" corrected to one screen with a stanza per provider.
+- Worked Example B's pinned ts `1786244905` is 2026-08-09T03:08:25Z, so
+  its structural unlock `1788664105` is **2026-09-06**; the spec
+  prose's "≈ 2026-09-05" day label is off by one for its own pinned
+  timestamp. Fixture assertions were already correct; the stray
+  comments inheriting the label were fixed. Real data (first snapshot
+  2026-08-08T03:08:25Z) correctly prints ~2026-09-05, matching §11.
+
+Gates at the end of the audit-fix pass: `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, `cargo test` (77 tests)
+all green; assets re-captured with freeze from the fixed binary.
+
+## 20. Second audit pass: contract truth, grep gate, reinstall (2026-08-08)
+
+A second v0.2 audit found the README `--json` claims overstated, the
+handoff's literal grep gate failing on word-wrap vocabulary, a stale
+installed binary, and three taste defects. §11–§19 stay as recorded —
+true of their binaries at their capture times. Fixes, verified against
+a fresh run (`generated_at = 1786229952`):
+
+**`--json` claims scoped and completed.** The README claimed "every
+dollar figure is a tagged object"; live JSON serializes exact measured
+operands (`extracted_usd`, `plan.monthly_usd`, `plan.window_cost_usd`,
+`basis.floor_usd_per_window`, `basis.bound_usd_per_window`,
+`decision.plan_cost_measured_usd`, `basis.certified.extracted_usd`) as
+plain floats. The claim now reads "every **estimated** dollar figure"
+— only `left_on_table_usd` and `gap_usd` carry uncertainty to tag;
+measured operands have none. And the "UNKNOWN is null plus a sibling
+reason" claim was false for `open_windows[].gap_usd` (bare `null`,
+demonstrated on claude `seven_day`): `OpenWindow` gains `gap_reason`,
+present exactly when `gap_usd` is null (within-schema field growth) —
+this run emits `"uncalibrated and no achieved-window bound yet"`
+(operative, no bound) and `"non-operative — the operative window
+carries the dollars"` (`five_hour`); the third arm, extraction
+covering the bound, is pinned by test. Invariant test:
+`null_gap_always_carries_reason`.
+
+**Grep gate.** §15 recorded `grep -ri "wrapped\|heatmap" src README.md
+→ no matches` while 9 word-wrap-vocabulary hits lived in src/brief.rs
+(`push_wrapped`, "Wrapped continuations", "unwrapped render") — not
+the deleted feature, but the gate is literal. Renamed to `push_folded`
+/ "folded continuations" / "unfolded render"; the gate now passes
+literally: `grep -ri "wrapped\|heatmap" src/ README.md` → exit 1.
+
+**Reinstall.** `~/.local/bin/merma` was a stale earlier v0.2 build
+(sha256 9a9a8f81… at this pass's start; the audit had caught 17b4728d…
+printing the `keep (keep ≥ ×1.0)` stutter and the uncertified
+`≥ $46.32`). Reinstalled: installed sha256 244284b0… ==
+`target/release/merma` byte-identical. Postconditions re-run:
+`merma --version` → 0.2.0 exit 0; `echo '{}' | merma statusline-hook`
+exit 0; `~/.claude/settings.json` parses; doctor `✓ store`,
+`✓ claude transcripts`; `launchctl list` shows `com.merma.collect`
+status 0. The machine's statusline now runs the fixed build.
+
+**Taste.**
+
+- The `≥` headline wrapped with a widowed `−` at end of line
+  ("…windows (27.0d) − ⏎ $54.02 extracted…"). The fold rule now binds
+  an operator word (`−`, `×`, `≥`, `≈`, `–`, `-`) to its right operand
+  — a break lands before the operator, never after; `·` and `—` remain
+  legitimate line-end separators. Pinned by
+  `fold_never_orphans_an_operator`; this run renders "…windows
+  (27.0d) ⏎ − $54.02 extracted in them". The bind requires exactly one
+  space, so the value-column pad never fuses.
+- Token counts group thousands like the dollars beside them:
+  `41218 tok` → `41,218 tok` (`fmt::count`, one numeral rule per
+  surface).
+- `⚠` note sentences render dim (glyph-only yellow), restoring the
+  v0.1 brightness hierarchy; `✗` errors stay full-bright.
+- Doctor's value column keeps a ≥ 2-space gutter (label field 31 → 32
+  cells) so `claude cross-window attribution` no longer touches its
+  detail.
+
+Assets re-captured from the reinstalled binary:
+`freeze --execute "merma" --window -o assets/brief.svg` (and
+`"merma doctor"` → assets/doctor.svg; same flags for the PNG spot
+captures). Gates: `cargo fmt --check`, `cargo clippy --all-targets --
+-D warnings`, `cargo test` (80 tests) all green.
