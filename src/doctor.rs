@@ -1,0 +1,294 @@
+//! `merma doctor` — source diagnostics and cross-checks.
+//!
+//! Every data source gets a ✓/⚠/✗ with a concrete remedy. Cross-checks compare
+//! merma's latest stored snapshots against the live endpoints so the user can
+//! also eyeball them against Claude Code `/usage` and
+//! chatgpt.com/codex/settings/usage.
+
+use crate::config::Cfg;
+use crate::pricing::PriceBook;
+use crate::store::{Store, CLAUDE, CODEX};
+use anyhow::Result;
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
+pub struct Check {
+    pub name: String,
+    pub status: String, // ok | warn | fail
+    pub detail: String,
+}
+
+fn ok(name: &str, detail: String) -> Check {
+    Check {
+        name: name.into(),
+        status: "ok".into(),
+        detail,
+    }
+}
+fn warn(name: &str, detail: String) -> Check {
+    Check {
+        name: name.into(),
+        status: "warn".into(),
+        detail,
+    }
+}
+fn fail(name: &str, detail: String) -> Check {
+    Check {
+        name: name.into(),
+        status: "fail".into(),
+        detail,
+    }
+}
+
+pub fn run(store: &mut Store, cfg: &Cfg, book: &PriceBook) -> Result<Vec<Check>> {
+    let mut checks = Vec::new();
+
+    // ── store ──
+    let (events, snaps) = store.counts()?;
+    checks.push(ok(
+        "store",
+        format!(
+            "{} — {events} usage events, {snaps} snapshots",
+            cfg.db_path().display()
+        ),
+    ));
+
+    // ── price tables ──
+    let (n_claude, n_openai, n_credits) = book.entry_counts();
+    let mut price_detail = format!(
+        "{} — {n_claude} claude, {n_openai} openai, {n_credits} credit-rate entries",
+        book.source
+    );
+    if let Some(raw) = store.meta_get("codex_credits")? {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let bal = v
+                .pointer("/balance")
+                .and_then(|x| x.as_str())
+                .unwrap_or("?");
+            let unlimited = v
+                .pointer("/unlimited")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            price_detail.push_str(&format!(
+                " · codex credit balance {bal}{}",
+                if unlimited { " (unlimited)" } else { "" }
+            ));
+        }
+    }
+    checks.push(ok("prices", price_detail));
+
+    // ── historical parse loss ──
+    match store
+        .meta_get("parse_errors_total")?
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+    {
+        0 => {}
+        n => checks.push(warn(
+            "parse loss",
+            format!(
+                "{n} line(s) were unparseable across all scans — totals may undercount \
+                 by that many requests"
+            ),
+        )),
+    }
+
+    // ── claude transcripts ──
+    let projects = cfg.claude_projects_dir();
+    if projects.is_dir() {
+        let mut count = 0usize;
+        let mut oldest: Option<i64> = None;
+        for e in walkdir::WalkDir::new(&projects)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if e.path().extension().and_then(|x| x.to_str()) == Some("jsonl") {
+                count += 1;
+                if let Ok(m) = e.metadata() {
+                    if let Ok(t) = m.modified() {
+                        let ts = t
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        oldest = Some(oldest.map_or(ts, |o: i64| o.min(ts)));
+                    }
+                }
+            }
+        }
+        let age_days = oldest.map(|o| (chrono::Utc::now().timestamp() - o) / 86_400);
+        checks.push(ok(
+            "claude transcripts",
+            format!(
+                "{count} files, oldest ~{} days",
+                age_days.map_or("?".into(), |d| d.to_string())
+            ),
+        ));
+    } else {
+        checks.push(fail(
+            "claude transcripts",
+            format!("{} missing", projects.display()),
+        ));
+    }
+
+    // ── retention ──
+    match std::fs::read_to_string(cfg.claude_settings_json())
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    {
+        Some(s) => {
+            let hook = s
+                .pointer("/statusLine/command")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if hook.contains("merma") {
+                checks.push(ok("statusline hook", format!("installed ({hook})")));
+            } else {
+                checks.push(warn(
+                    "statusline hook",
+                    "NOT installed — Claude keeps no utilization history; run `merma install`"
+                        .into(),
+                ));
+            }
+            match s.get("cleanupPeriodDays").and_then(|x| x.as_i64()) {
+                Some(d) if d >= 90 => checks.push(ok(
+                    "transcript retention",
+                    format!("cleanupPeriodDays = {d}"),
+                )),
+                other => checks.push(warn(
+                    "transcript retention",
+                    format!(
+                        "cleanupPeriodDays = {} — transcripts evaporate; run \
+                         `merma install --fix-retention`",
+                        other.map_or("unset (default 30)".into(), |d| d.to_string())
+                    ),
+                )),
+            }
+        }
+        None => checks.push(fail(
+            "claude settings",
+            format!("cannot read {}", cfg.claude_settings_json().display()),
+        )),
+    }
+
+    // ── statusline spool ──
+    let spool = cfg.statusline_spool();
+    if spool.exists() {
+        checks.push(ok("statusline spool", format!("{}", spool.display())));
+    } else {
+        checks.push(warn(
+            "statusline spool",
+            "empty (fills while Claude Code sessions run, after `merma install`)".into(),
+        ));
+    }
+    if cfg.hook_error_log().exists() {
+        let text = std::fs::read_to_string(cfg.hook_error_log()).unwrap_or_default();
+        let n = text.lines().count();
+        let last = text.lines().last().unwrap_or("").to_string();
+        checks.push(warn("hook errors", format!("{n} logged; last: {last}")));
+    }
+
+    // ── claude plan ──
+    let book = crate::pricing::PriceBook::load(Some(&cfg.prices_override_path()))?;
+    match cfg.claude_plan(&book) {
+        Ok((label, usd, _)) => checks.push(ok("claude plan", format!("{label} (${usd}/mo)"))),
+        Err(e) => checks.push(fail("claude plan", format!("{e:#}"))),
+    }
+
+    // ── claude oauth (unofficial, opt-out) ──
+    if cfg.file.claude_oauth_enabled == Some(false) {
+        checks.push(ok("claude oauth", "disabled in config".into()));
+    } else {
+        match crate::collectors::claude_oauth::poll(store, cfg) {
+            Ok(snaps) => {
+                let s: Vec<String> = snaps
+                    .iter()
+                    .map(|s| format!("{} {:.0}%", s.window_id, s.used_percent))
+                    .collect();
+                checks.push(ok("claude oauth (live)", s.join(" · ")));
+            }
+            Err(e) => checks.push(warn("claude oauth (live)", format!("{e:#}"))),
+        }
+    }
+
+    // ── codex sessions ──
+    let roots = cfg.codex_session_roots();
+    if roots[0].is_dir() {
+        checks.push(ok("codex sessions", format!("{}", roots[0].display())));
+    } else {
+        checks.push(fail(
+            "codex sessions",
+            format!("{} missing", roots[0].display()),
+        ));
+    }
+
+    // ── codex live + cross-check ──
+    match crate::collectors::codex_live::poll(store, cfg) {
+        Ok(live) => {
+            let s: Vec<String> = live
+                .iter()
+                .map(|s| format!("{} {:.0}%", s.window_id, s.used_percent))
+                .collect();
+            checks.push(ok("codex wham (live)", s.join(" · ")));
+            // Cross-check: latest rollout snapshot vs live (same window).
+            let now = chrono::Utc::now().timestamp();
+            for l in &live {
+                let recent =
+                    store.snapshots_between(CODEX, Some(&l.window_id), now - 86_400, now)?;
+                if let Some(r) = recent
+                    .iter()
+                    .rev()
+                    .find(|r| r.source.starts_with("rollout"))
+                {
+                    let d = (r.used_percent - l.used_percent).abs();
+                    let name = format!("cross-check codex {}", l.window_id);
+                    if d <= 5.0 {
+                        checks.push(ok(
+                            &name,
+                            format!(
+                                "rollout {:.0}% vs live {:.0}% (Δ{d:.0} ≤ 5)",
+                                r.used_percent, l.used_percent
+                            ),
+                        ));
+                    } else {
+                        checks.push(warn(
+                            &name,
+                            format!(
+                                "rollout {:.0}% vs live {:.0}% (Δ{d:.0}) — rollouts may be stale",
+                                r.used_percent, l.used_percent
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        Err(e) => checks.push(warn("codex wham (live)", format!("{e:#}"))),
+    }
+
+    // ── ingested coverage ──
+    for p in [CODEX, CLAUDE] {
+        match store.usage_bounds(p)? {
+            Some((lo, hi)) => checks.push(ok(
+                &format!("{p} usage history"),
+                format!("{} → {}", crate::report::date(lo), crate::report::date(hi)),
+            )),
+            None => checks.push(warn(
+                &format!("{p} usage history"),
+                "no events ingested yet — run `merma scan`".into(),
+            )),
+        }
+    }
+    Ok(checks)
+}
+
+pub fn render_text(checks: &[Check]) -> String {
+    let mut out = String::new();
+    for c in checks {
+        let icon = match c.status.as_str() {
+            "ok" => "✓",
+            "warn" => "⚠",
+            _ => "✗",
+        };
+        out.push_str(&format!("{icon} {:<24} {}\n", c.name, c.detail));
+    }
+    out
+}
